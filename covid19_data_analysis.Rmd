@@ -1,0 +1,265 @@
+---
+title: "COVID-19"
+author: "Shepard Dog"
+date: "04/08/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Libraries
+```{r libraries, echo = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(zoo)
+
+
+```
+
+
+#### Data Imports
+The data was taken from the John Hopkins Github. There are 4 time series. Namely data sets on US confirmed cases, global confirmed cases, US deaths, and global deaths. 
+The data is imported via urls and therefor each time the code is run it will update to show the latest numbers.
+
+```{r data_import, echo=FALSE}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+url_1 <- "time_series_covid19_confirmed_US.csv"
+url_2 <- "time_series_covid19_confirmed_global.csv"
+url_3 <- "time_series_covid19_deaths_US.csv"
+url_4 <- "time_series_covid19_deaths_global.csv"
+
+url_vec <- c(url_1, url_2, url_3, url_4)
+urls <- str_c(url_in, url_vec)
+
+global_cases <- read_csv(urls[2])
+global_deaths <- read_csv(urls[4])
+us_cases <- read_csv(urls[1])
+us_deaths <- read_csv(urls[3])
+
+```
+#### cleaning up and tidying datasets 
+These data sets were what we call wide data sets. Each date is in a column of its own. But to analyze these data sets with tidyverse, the data has to be transformed into, tidy data sets. This can be done by creating 2 variables (or columns, Date and Cases and summing the cases for each day, for a given country, province and state).
+In addition to the country, province, state, date, the number of cases, number of deaths, there were some geographical data such as latitude and longitude information, which I removed from the data set, as it has no bearing on the analysis.
+
+The data set on  US confirmed cases had additional data presumably for hospital and other administrative purposes. I removed the additional columns and also renamed the columns (or variables) in more R-friendly format.
+
+```{r clean_up, echo = TRUE}
+global_cases <- global_cases %>% select(-c(Lat, Long))
+global_cases <- global_cases %>% pivot_longer(cols = -c(`Province/State`, `Country/Region`), names_to = "date", values_to ="Cases")
+
+global_deaths <- global_deaths %>% select(-c(Lat, Long))
+global_deaths <- global_deaths %>% pivot_longer(cols = -c(`Province/State`, `Country/Region`), names_to = "date", values_to ="Deaths")
+
+us_cases <- us_cases %>% select(-c(iso2, iso3, FIPS, code3, Lat, Long_))
+us_cases <- us_cases %>% pivot_longer(cols = -c(Province_State, Country_Region, Combined_Key,UID, Admin2), names_to = "date", values_to = "cases")
+
+us_deaths <- us_deaths %>% select(-c(iso2, iso3, FIPS, code3, Lat, Long_ ))
+us_deaths <- us_deaths %>% pivot_longer(cols = -c(Province_State, Country_Region, Combined_Key,UID, Admin2, Population, UID), names_to = "date", values_to = "Deaths")
+```
+
+Joining Global_cases and global_deaths data sets as global and renaming some variables to be more R friendly.
+
+```{r global_data, echo=TRUE}
+#Joining tables cases and deaths.
+global <- global_cases %>% full_join(global_deaths)
+#Renaming variables to be more R friendly and change the date format.
+global <- global %>% rename(Country_Region = `Country/Region`, Province_State = `Province/State`) %>% mutate(date = mdy(date)) 
+global <- global %>% unite("Combined_key", c(Province_State, Country_Region), sep = ",", na.rm =TRUE, remove = FALSE)
+```
+Looking at the summary of the data 
+```{r, veiw, echo=TRUE}
+summary(global)
+```
+```{r joining_US_cases_deaths,echo=TRUE}
+#us_deaths changing data object
+us_deaths <- us_deaths %>% mutate(date =mdy(date))
+us_cases <- us_cases %>% mutate(date =mdy(date))
+us <- us_cases %>% full_join(us_deaths)
+#removing UID
+us <- us %>% select(-(UID))
+#Filtering out where cases == 0
+us <- us %>% filter(cases > 0)
+summary(us)
+
+```
+
+```{r visulalize_us, echo=TRUE}
+US_by_State <- us %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarise(cases = sum(cases), Deaths = sum(Deaths), Population = sum(Population)) %>% 
+mutate(death_per_mil = Deaths*1000000/Population) %>% select(Province_State, Country_Region, date, cases, Deaths, death_per_mil, Population) %>% 
+ungroup()
+
+```
+
+```{r}
+#Filtering out where cases more than 0
+global <- global %>% filter(Cases >0)
+
+```
+
+### Getting population data.
+It would be good to add population data for global data frame for comparison purposes.
+```{r}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) 
+#Tidying uid data
+uid <- uid %>% select(-c(iso2, iso3, FIPS, code3, Lat, Long_, Admin2, UID))
+#Including population data in the global 
+global <- global %>% full_join(uid)
+#Filtering out where there are no cases
+global <- global %>% filter(Cases >0)
+summary(global)
+#Checking if the summary is correct 
+global %>% filter(Cases > 30000000)
+
+```
+
+### Creating a data set for global summary
+```{r}
+global_summary <- global %>% group_by(date) %>% 
+  summarise(Cases = sum(Cases), Deaths = sum(Deaths)) %>% mutate(deaths_as_percent_cases = Deaths/Cases* 100) %>% 
+ungroup()
+
+```
+
+### Analysing US cases and deaths.
+```{r}
+# Creating a data frame for US totals for cases, deaths
+US_totals <- US_by_State %>% 
+  group_by(Country_Region, date) %>% 
+  summarise(cases = sum(cases), Deaths = sum(Deaths), Population = sum(Population)) %>%
+  mutate(death_per_mill =  Deaths/Population* 10^6) %>% 
+  select(Country_Region, date, cases, Deaths, death_per_mill, Population) %>% 
+  ungroup()
+
+# Adding additional parameters to compare numbers, cases_per-mill, deaths_per_mill, death_as_percen_cases
+
+```
+
+```{r viz, echo=TRUE}
+US_totals %>% filter(cases > 0) %>% ggplot(aes(x = date, y =cases))+
+    geom_line(aes(color = "cases"))+
+    geom_point(aes(color = "cases"))+
+    geom_line(aes(y = Deaths, color = "Deaths"))+
+    scale_y_log10()+
+     theme(legend.position = "bottom", axis.text.x = element_text(angle = 90))+
+labs(title = "COVID-19 in US Cases and Deaths", y = NULL)
+
+
+```
+
+This looks like, even though the number of cases increased the number of death remains constant for the US. To test that I calculated the number of new cases, the number new deaths, and the rate of death for a million for the period and visualize it. 
+
+```{r checking_analysis_US, echo=TRUE}
+US_totals<- US_totals %>% mutate(new_cases = cases- lag(cases)) %>% mutate(new_deaths = Deaths- lag(Deaths))
+
+#checking the last few rows of the required variables
+US_totals %>% filter(cases > 0) %>% ggplot(aes(x = date, y = new_cases))+
+    geom_line(aes(color = "new_cases"))+
+    geom_point(aes(color = "new_cases"))+
+    geom_line(aes(y = new_deaths, color = "new_deaths"))+
+    scale_y_log10()+
+     theme(legend.position = "bottom", axis.text.x = element_text(angle = 90))+
+labs(title = "COVID-19 in US New Cases and New Deaths", y = NULL)
+```
+It looks like indeed the number of deaths and number of cases are coming down in US, there are drop in new cases and new deaths. 
+
+### Data analysis for Sri Lanka and compare with global numbers 
+
+```{r Sri_lanka, echo=FALSE}
+Sri_lanka <- global %>% filter(Country_Region == "Sri Lanka", Cases > 0) 
+
+Sri_lanka <- Sri_lanka %>% mutate(death_as_percent_cases = Deaths/Cases*100)
+Sri_lanka <- Sri_lanka %>% mutate(Cases_per_mill = Cases/Population*1000000)
+Sri_lanka <- Sri_lanka %>% mutate(deaths_per_mill = Deaths/Population *10^6)
+
+#Adding new cases and new deaths
+Sri_lanka <- Sri_lanka %>% mutate(New_cases = Cases- lag(Cases))
+Sri_lanka <- Sri_lanka %>% mutate(New_deaths = Deaths - lag(Deaths))
+tail(Sri_lanka %>% select(New_deaths, New_cases, everything()))
+```
+Creating a new data frame where I summarize the cases and deaths by month and year.
+
+```{r}
+total_deaths <- Sri_lanka %>%  mutate(month = format(date, "%m"), year = format(date, "%Y")) %>%
+       group_by(month, year) %>%
+       summarise(tot.deaths = sum(New_deaths))
+total_cases <- Sri_lanka %>%  mutate(month = format(date, "%m"), year = format(date, "%Y")) %>%
+       group_by(month, year) %>%
+       summarise(tot.cases = sum(New_cases))
+```
+### Plotting the COVID 19 Cases and Deaths In Sri Lanka 
+```{r}
+Sri_lanka %>% filter(Cases > 0) %>% ggplot(aes(x = date, y = Cases))+
+    geom_line(aes(color = "Cases"))+
+    geom_point(aes(color = "Cases"))+
+    geom_line(aes(y = Deaths, color = "Deaths"))+
+    scale_y_log10()+
+     theme(legend.position = "bottom", axis.text.x = element_text(angle = 90))+
+labs(title = "COVID-19 Cases and Deaths in Sri Lanka", y = NULL)
+```
+Unlike in the US, the cases and the deaths are raising steadily in Sri Lanka. It would be interesting to see theses numbers in a month or two from now on as Sri Lanka has stared a country wide vaccination program. It will also show the effectiveness of the vaccination program. 
+
+### Plotting the number of deaths per month.
+``` {r}
+
+deaths_by_month_year <- Sri_lanka %>%  mutate(month = format(date, "%m"), year = format(date, "%Y")) %>%
+       group_by(month, year) %>%
+       summarise(tot.deaths = sum(New_deaths))
+cases_by_month_year <- Sri_lanka %>%  mutate(month = format(date, "%m"), year = format(date, "%Y")) %>%
+       group_by(month, year) %>%
+       summarise(tot.cases = sum(New_cases))
+# Joining the two tables to get a monthly summary of deaths and cases in Sri Lanka, since the beginning of the epidemic.
+Summary_sl <- deaths_by_month_year %>% full_join(cases_by_month_year)
+Summary_sl$Date <- zoo::as.yearmon(paste(Summary_sl$year, Summary_sl$month), "%Y %m")
+
+ggplot(data = Summary_sl)+geom_point(mapping = aes(x= Date, y = tot.deaths), color='turquoise')
+```
+The graph shows that there is an increase in the number of deaths in Sri Lanak around March- April period. Next I want to look at  SL death rate as a percent of infected and see if the pattern holds.
+
+```{r}
+# Sri Lanka deaths as a % of cases. 
+sl_death_rates <- Sri_lanka  %>% select(date, death_as_percent_cases ) %>% filter(death_as_percent_cases >0) %>% rename(death_as_percent_cases_sl = death_as_percent_cases)
+tail(sl_death_rates, 10)
+#Getting the global deaths as a % of cases. 
+global_death_rates <- global_summary %>% select(date, deaths_as_percent_cases)
+tail(global_death_rates, 10)
+#Creating one data set with the two data sets. 
+death_rates <- full_join(sl_death_rates, global_death_rates, by ="date")
+
+```
+Plotting both rates in the same graph for better visual comparison.
+```{r}
+
+death_rates %>% ggplot(aes(date))+
+           geom_line(aes(y = death_as_percent_cases_sl, color = "Deaths as % cases SL" ))+
+  geom_line(aes(y = deaths_as_percent_cases, color = "Death as % cases global" ))+
+labs(x = "Date", y = "Percentage")+
+  theme(legend.position="bottom")
+
+
+```
+
+It looks like Sri Lanka shows a similar pattern to global death percentage of cases albeit lower rates. However during the current phase Sri Lanka's rates seems, to be climbing, while the gloabla rates are decreasing. 
+
+#### Trend for Sri Lanka COVID deaths 
+
+```{r}
+test_1 <- lm(death_as_percent_cases_sl ~ date, data = sl_death_rates)
+summary(test_1)
+test_2 <- sl_death_rates %>% mutate(pred=predict(test_1))
+test_2 %>% ggplot()+
+  geom_point(aes(x = date, y = death_as_percent_cases_sl), color = "blue")+
+  geom_point(aes(x=date, y= pred), color = "red") +
+  labs(x = "Date", y = "Death rate of COVID 19") 
+```
+
+Biases
+The data has come from John Hopkins University and is a reliable source. However, when it comes to global data JHU I believe has to relay on other data collectors to get their data. The accuracy and reliability of data is beyond their control. For example if some  county, do not wish to divulge actual data, information due to political reasons  (happens in most developing countries, such as Sri Lanka)  the analysis would inherit biases in the data set. 
+
+
